@@ -1,0 +1,2 @@
+# README Notion
+[![Notion](https://img.shields.io/badge/Notion-%23000000.svg?style=for-the-badge&logo=notion&logoColor=white)](https://past-shrine-d6a.notion.site/220V-Image-Converter-README-1150cf139904803587d4fac69f3d4b51?pvs=4)
