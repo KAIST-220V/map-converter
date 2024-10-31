@@ -1,6 +1,9 @@
 import pyproj
+from shapely.geometry import Polygon
 import math
+import json
 from PIL import Image, ImageDraw
+from statistics import mean
 
 # no limit on the image size
 Image.MAX_IMAGE_PIXELS = None
@@ -14,7 +17,7 @@ def mark_center_in_image(image_path):
     center_x = width // 2
     center_y = height // 2
 
-    circle_radius = int(min(width, height) * 0.01)
+    circle_radius = int(min(width, height) * 0.001)
 
     draw = ImageDraw.Draw(img)
 
@@ -36,7 +39,7 @@ def mark_x_y_in_image(image_path, x, y):
     img = Image.open(image_path)
     width, height = img.size
 
-    circle_radius = int(min(width, height) * 0.01)
+    circle_radius = int(min(width, height) * 0.001)
 
     draw = ImageDraw.Draw(img)
 
@@ -104,40 +107,123 @@ def get_origin_point(center_lat, center_lon, image_width_px, image_height_px, im
 def get_x_y(x, y, origin_lat, origin_lon, image_resolution):
     return move_point(x, y, origin_lat, origin_lon, image_resolution)
 
+# get area of the polygon
+def get_area_of_polygon(lat_lon_list):
+    # UTM Zone 52N : convert coordinate
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32652", always_xy=True)
+    projected_points = [transformer.transform(lon, lat) for lat, lon in lat_lon_list]
 
-if __name__ == "__main__": 
-    # these values will be provided by the metadata
-    ##################
-    lat_0 = 38.0
-    lon_0 = 127.0
-    x_0 = 200000
-    y_0 = 600000
-    x_tm = 228580  # Easting
-    y_tm = 419031  # Northing
-    image_resolution = 0.11 # Indicating 1 pixel size in meter (??)
-    ##################
+    polygon = Polygon(projected_points)
+    area_m2 = polygon.area  # m^2 unit
 
-    # test value
-    ##################
-    x = 3000
-    y = 2000
-    ##################
+    return area_m2
 
-    # get image size
-    image_width_px, image_height_px = get_image_px_info("./images/202402603C00810022.tif")
+# Convert the given input JSON to ouput JSON using the photo and its metadata
+# Note. The "image_id" of the input MUST be same with that of the photo and metadata.
+# E.g. ("image_id" : "12345") & (12345.tif, 12345.json)
+def convert_xy_to_lat_lon(input_json_path, input_image_dir, metadata_dir, output_json_dir):
 
-    # get center
+    # get image id
+    with open(input_json_path, 'r', encoding='utf-8') as file:
+        input_json = json.load(file)
+    
+    image_id = input_json['image_id']
+
+    # compare width, height of the image with input JSON data
+    input_image_path = f"{input_image_dir}/{image_id}.tif"
+    image_width, image_height = get_image_px_info(input_image_path)
+    given_width = input_json['image_size']['width']
+    given_height = input_json['image_size']['height']
+
+    if (image_height != given_height) or (image_width != given_width):
+        print("Failed to convert : the given image size is different from the input JSON.")
+        print(f" - Given size : {given_width, given_height}")
+        print(f" - Actual size : {image_width, image_height}")
+
+    # get metadata
+    metadata_path = f'{metadata_dir}/{image_id}.json'
+    with open(metadata_path, 'r', encoding='utf-8') as file:
+        metadata_json = json.load(file)
+    
+    lat_0 = metadata_json['lat_0']
+    lon_0 = metadata_json['lon_0']
+    x_0 = metadata_json['x_0']
+    y_0 = metadata_json['y_0']
+    x_tm = metadata_json['x_tm']
+    y_tm = metadata_json['y_tm']
+    image_resolution = metadata_json['image_resolution']
+
+    # formatting input JSON
+    panel_list_xy = []
+    for data in input_json['panel']:
+        # get mean
+        mean_x = mean(data['shape_attributes']['all_points_x'])
+        mean_y = mean(data['shape_attributes']['all_points_y'])
+        # make tuples
+        xy_list = list(zip(data['shape_attributes']['all_points_x'], data['shape_attributes']['all_points_y']))
+        new_item = {
+            'mean_point' : (mean_x, mean_y),
+            'all_points' : xy_list
+        }
+        panel_list_xy.append(new_item)
+
+    # get center of the image in lat / lon format
     center_lat, center_lon = convert_GRS(lat_0, lon_0, x_0, y_0, x_tm, y_tm)
 
     # get origin
-    origin_lat_lon = get_origin_point(center_lat, center_lon, image_width_px, image_height_px, image_resolution)
+    origin_lat_lon = get_origin_point(center_lat, center_lon, image_width, image_height, image_resolution)
 
-    # get (x,y)
-    x_y_to_lat_lon = get_x_y(x, y, origin_lat_lon[0], origin_lat_lon[1], image_resolution)
-    print(x_y_to_lat_lon)
+    # convert
+    panel_list_lat_lon = []
+    for xy_data in panel_list_xy:
+        new_item = {}
+        new_item['mean_point'] = get_x_y(xy_data['mean_point'][0], xy_data['mean_point'][1], origin_lat_lon[0], origin_lat_lon[1], image_resolution)
+        xy_list_lat_lon = []
+        for xy_point in xy_data['all_points']:
+            xy_to_lat_lon = get_x_y(xy_point[0], xy_point[1], origin_lat_lon[0], origin_lat_lon[1], image_resolution)
+            xy_list_lat_lon.append(xy_to_lat_lon)
+        new_item['all_points'] = xy_list_lat_lon
+        panel_list_lat_lon.append(new_item)
 
-    # debug : mark
-    mark_center_in_image("./images/202402603C00810022.tif")
-    mark_x_y_in_image("./images/202402603C00810022.tif", x, y)
+    # get area (m^2)
+    area_list = []
+    for panel_info in panel_list_lat_lon:
+        points = panel_info['all_points']
+        area_list.append(get_area_of_polygon(points))
+
+    # craft a new JSON
+    new_json_dict = {}
+    new_json_dict['image_id'] = input_json['image_id']
+    new_json_dict['image_size'] = {
+        "width" : input_json['image_size']['width'],
+        "height" : input_json['image_size']['height']
+    }
+    panel_final_info_list = []
+    for i in range(0, len(panel_list_lat_lon)):
+        new_panel_info = {}
+        
+        x_points, y_points = zip(*panel_list_lat_lon[i]['all_points'])
+        new_panel_info['all_points_x'] = x_points
+        new_panel_info['all_points_y'] = y_points
+
+        new_panel_info['mean_point_latitude'] = panel_list_lat_lon[i]['mean_point'][0]
+        new_panel_info['mean_point_longitude'] = panel_list_lat_lon[i]['mean_point'][1]
+
+        new_panel_info['shape_area_m2'] = area_list[i]
+
+        panel_final_info_list.append({
+            "shape_attributes" : new_panel_info
+        })
+
+    new_json_dict['panel'] = panel_final_info_list
+
+    # save as a file
+    with open(f"{output_json_dir}/{input_json['image_id']}_output.json", 'w', encoding='utf-8') as json_file:
+        json.dump(new_json_dict, json_file, ensure_ascii=False, indent=4)
+    
+    return
+
+if __name__ == "__main__": 
+    convert_xy_to_lat_lon('./input_json/input_from_AI.json', '../large_files', './metadata_json', '.')
 
 
