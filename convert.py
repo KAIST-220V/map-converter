@@ -4,6 +4,7 @@ import math
 import json
 from PIL import Image, ImageDraw
 from statistics import mean
+import os
 
 # no limit on the image size
 Image.MAX_IMAGE_PIXELS = None
@@ -112,10 +113,11 @@ def get_area_of_polygon(lat_lon_list):
     # UTM Zone 52N : convert coordinate
     transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32652", always_xy=True)
     projected_points = [transformer.transform(lon, lat) for lat, lon in lat_lon_list]
-
+    if len(projected_points) < 4:
+        print(projected_points)
     polygon = Polygon(projected_points)
     area_m2 = polygon.area  # m^2 unit
-
+    
     return area_m2
 
 # Convert the given input JSON to ouput JSON using the photo and its metadata
@@ -129,6 +131,9 @@ def convert_xy_to_lat_lon(input_json_path, input_image_dir, metadata_dir, output
     
     image_id = input_json['image_id']
 
+    if image_id.endswith('.tif'):
+        image_id = image_id[:-4]
+
     # compare width, height of the image with input JSON data
     input_image_path = f"{input_image_dir}/{image_id}.tif"
     image_width, image_height = get_image_px_info(input_image_path)
@@ -136,9 +141,10 @@ def convert_xy_to_lat_lon(input_json_path, input_image_dir, metadata_dir, output
     given_height = input_json['image_size']['height']
 
     if (image_height != given_height) or (image_width != given_width):
-        print("Failed to convert : the given image size is different from the input JSON.")
-        print(f" - Given size : {given_width, given_height}")
-        print(f" - Actual size : {image_width, image_height}")
+        # print("Failed to convert : the given image size is different from the input JSON.")
+        # print(f" - Given size : {given_width, given_height}")
+        # print(f" - Actual size : {image_width, image_height}")
+        pass
 
     # get metadata
     metadata_path = f'{metadata_dir}/{image_id}.json'
@@ -187,10 +193,16 @@ def convert_xy_to_lat_lon(input_json_path, input_image_dir, metadata_dir, output
 
     # get area (m^2)
     area_list = []
+    filtered_panel_list_lat_lon = []
+
     for panel_info in panel_list_lat_lon:
         points = panel_info['all_points']
-        area_list.append(get_area_of_polygon(points))
+        if len(points) >= 4:
+            area_list.append(get_area_of_polygon(points))
+            filtered_panel_list_lat_lon.append(panel_info)
 
+    panel_list_lat_lon = filtered_panel_list_lat_lon
+            
     # craft a new JSON
     new_json_dict = {}
     new_json_dict['image_id'] = input_json['image_id']
@@ -223,7 +235,30 @@ def convert_xy_to_lat_lon(input_json_path, input_image_dir, metadata_dir, output
     
     return
 
-if __name__ == "__main__": 
-    convert_xy_to_lat_lon('./input_json/input_from_AI.json', '../large_files', './metadata_json', '.')
+def process_all_files(input_dir, metadata_dir, output_dir, image_dir):
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
 
+    # Iterate over all files in the input directory
+    for file_name in os.listdir(input_dir):
+        if file_name.endswith(".json"):
+            input_json_path = os.path.join(input_dir, file_name)
+            image_id = file_name.split(".json")[0]
 
+            # Check if metadata file exists
+            metadata_path = os.path.join(metadata_dir, f"{image_id}.json")
+            if not os.path.exists(metadata_path):
+                print(f"Metadata not found for {image_id}. Skipping.")
+                continue
+
+            # Process the file
+            print(f"Processing {input_json_path}...")
+            convert_xy_to_lat_lon(input_json_path, image_dir, metadata_dir, output_dir)
+
+if __name__ == "__main__":
+    input_dir = './input_json'
+    metadata_dir = './metadata_json'
+    output_dir = './output_data'
+    image_dir = '/Volumes/T7/images'
+
+    process_all_files(input_dir, metadata_dir, output_dir, image_dir)
